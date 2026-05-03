@@ -23,6 +23,17 @@ const SESSION_TTL_HOURS: i64 = 1;
 /// records on each fetch.
 const FIRST_COUNTER: i32 = -10;
 const HTTP_TIMEOUT_SECS: u64 = 30;
+const EARLY_STOP_GRACE_PAGES: usize = 5;
+
+pub struct FetchOptions {
+    pub record_filter: Option<Box<dyn Fn(&Record) -> bool + Send + Sync>>,
+}
+
+impl Default for FetchOptions {
+    fn default() -> Self {
+        Self { record_filter: None }
+    }
+}
 
 pub struct BiotechwareApi {
     client: Client,
@@ -165,14 +176,14 @@ impl BiotechwareApi {
         Ok(result)
     }
 
-    #[instrument(skip(self))]
-    pub async fn fetch_all(&self, list_type: ListType) -> crate::errors::Result<Vec<Record>> {
+    #[instrument(skip(self, opts))]
+    pub async fn fetch_all(&self, list_type: ListType, opts: FetchOptions) -> crate::errors::Result<Vec<Record>> {
         let bootstrap = self.fetch_page(list_type, FIRST_COUNTER).await?;
         if bootstrap.list.is_empty() || bootstrap.count <= 0 {
             info!(list_type = list_type.to_str(), "no records found");
             return Ok(vec![]);
         }
-        let records = fetch_all_sliding(bootstrap, FIRST_COUNTER, self.max_concurrent, |c| {
+        let records = fetch_all_sliding(bootstrap, FIRST_COUNTER, self.max_concurrent, opts, |c| {
             self.fetch_page(list_type, c)
         })
         .await?;
@@ -185,6 +196,7 @@ async fn fetch_all_sliding<F, Fut>(
     bootstrap: GetRecordsResponse,
     first_counter: i32,
     max_concurrent: usize,
+    opts: FetchOptions,
     fetch: F,
 ) -> crate::errors::Result<Vec<Record>>
 where
@@ -193,10 +205,21 @@ where
 {
     let page_size = bootstrap.count;
     let max_concurrent = max_concurrent.max(1);
-    let mut results: Vec<(i32, Vec<Record>)> = vec![(first_counter, bootstrap.list)];
-    let mut pending: FuturesUnordered<std::pin::Pin<Box<dyn std::future::Future<Output = crate::errors::Result<(i32, GetRecordsResponse)>> + Send>>> = FuturesUnordered::new();
+
+    let bootstrap_records: Vec<Record> = match &opts.record_filter {
+        Some(f) => bootstrap.list.into_iter().filter(|r| f(r)).collect(),
+        None => bootstrap.list,
+    };
+
+    let mut results: Vec<(i32, Vec<Record>)> = vec![(first_counter, bootstrap_records)];
+    let mut pending: FuturesUnordered<
+        std::pin::Pin<
+            Box<dyn std::future::Future<Output = crate::errors::Result<(i32, GetRecordsResponse)>> + Send>,
+        >,
+    > = FuturesUnordered::new();
     let mut next_counter = first_counter + page_size;
     let mut stop = false;
+    let mut grace_misses: usize = 0;
 
     for _ in 0..max_concurrent {
         let c = next_counter;
@@ -209,7 +232,24 @@ where
         if page.list.is_empty() || page.count <= 0 {
             stop = true;
         } else {
-            results.push((counter, page.list));
+            let matched: Vec<Record> = match &opts.record_filter {
+                Some(f) => page.list.into_iter().filter(|r| f(r)).collect(),
+                None => page.list,
+            };
+
+            if opts.record_filter.is_some() {
+                if matched.is_empty() {
+                    grace_misses += 1;
+                    if grace_misses >= EARLY_STOP_GRACE_PAGES {
+                        stop = true;
+                    }
+                } else {
+                    grace_misses = 0;
+                }
+            }
+
+            results.push((counter, matched));
+
             if !stop {
                 let c = next_counter;
                 pending.push(Box::pin(fetch(c).map(move |r| r.map(|p| (c, p)))));
@@ -263,7 +303,7 @@ mod tests {
     #[tokio::test]
     async fn only_bootstrap_page() {
         let bootstrap = make_page(5);
-        let result = fetch_all_sliding(bootstrap, FIRST_COUNTER, 2, |_c| async {
+        let result = fetch_all_sliding(bootstrap, FIRST_COUNTER, 2, FetchOptions::default(), |_c| async {
             Ok(empty_page())
         })
         .await
@@ -286,7 +326,7 @@ mod tests {
             ]),
         ));
         let bootstrap = make_page(10);
-        let result = fetch_all_sliding(bootstrap, FIRST_COUNTER, 2, move |_c| {
+        let result = fetch_all_sliding(bootstrap, FIRST_COUNTER, 2, FetchOptions::default(), move |_c| {
             let q = queue.clone();
             async move {
                 Ok(q.lock().unwrap().pop_front().unwrap_or_else(empty_page))
@@ -302,7 +342,7 @@ mod tests {
     async fn propagates_fetch_error() {
         use crate::errors::Error;
         let bootstrap = make_page(10);
-        let result = fetch_all_sliding(bootstrap, FIRST_COUNTER, 1, |_c| async {
+        let result = fetch_all_sliding(bootstrap, FIRST_COUNTER, 1, FetchOptions::default(), |_c| async {
             Err(Error::BadStatus { endpoint: "test", status: 500 })
         })
         .await;
@@ -319,7 +359,7 @@ mod tests {
         let queue: Arc<Mutex<VecDeque<GetRecordsResponse>>> = Arc::new(Mutex::new(
             VecDeque::from(vec![make_page(1), make_page(1), empty_page(), empty_page()]),
         ));
-        let result = fetch_all_sliding(bootstrap, FIRST_COUNTER, 2, move |_c| {
+        let result = fetch_all_sliding(bootstrap, FIRST_COUNTER, 2, FetchOptions::default(), move |_c| {
             let q = queue.clone();
             async move {
                 Ok(q.lock().unwrap().pop_front().unwrap_or_else(empty_page))
@@ -328,5 +368,125 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(result.len(), 3);
+    }
+
+    // Filter keeps only records matching the predicate; non-matching records
+    // are discarded even when the page is non-empty.
+    #[tokio::test]
+    async fn filter_keeps_only_matching_records() {
+        use std::sync::{Arc, Mutex};
+        use std::collections::VecDeque;
+
+        let bootstrap = GetRecordsResponse {
+            count: 5,
+            counter: 0,
+            list: (0..5).map(make_record).collect(),
+        };
+        let queue: Arc<Mutex<VecDeque<GetRecordsResponse>>> = Arc::new(Mutex::new(
+            VecDeque::from(vec![
+                GetRecordsResponse {
+                    count: 5,
+                    counter: 0,
+                    list: (5..10).map(make_record).collect(),
+                },
+                empty_page(),
+                empty_page(),
+            ]),
+        ));
+        let opts = FetchOptions {
+            record_filter: Some(Box::new(|r: &Record| {
+                r.id.parse::<usize>().map(|n| n % 2 == 0).unwrap_or(false)
+            })),
+        };
+        let result = fetch_all_sliding(bootstrap, FIRST_COUNTER, 2, opts, move |_c| {
+            let q = queue.clone();
+            async move { Ok(q.lock().unwrap().pop_front().unwrap_or_else(empty_page)) }
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(result.len(), 5);
+        assert!(result.iter().all(|r| r.id.parse::<usize>().unwrap() % 2 == 0));
+    }
+
+    // After EARLY_STOP_GRACE_PAGES consecutive pages with no matching records
+    // the fetch stops; pages beyond the grace window are never requested.
+    #[tokio::test]
+    async fn grace_window_stops_after_n_misses() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let pages_fetched = Arc::new(AtomicUsize::new(0));
+        let pf = pages_fetched.clone();
+
+        let bootstrap = GetRecordsResponse {
+            count: 1,
+            counter: 0,
+            list: vec![make_record(0)],
+        };
+        let opts = FetchOptions {
+            record_filter: Some(Box::new(|r: &Record| {
+                r.id.parse::<usize>().map(|n| n % 2 == 0).unwrap_or(false)
+            })),
+        };
+        let result = fetch_all_sliding(bootstrap, FIRST_COUNTER, 1, opts, move |_c| {
+            let count = pf.fetch_add(1, Ordering::Relaxed);
+            async move {
+                if count < EARLY_STOP_GRACE_PAGES {
+                    Ok(GetRecordsResponse { count: 1, counter: 0, list: vec![make_record(1)] })
+                } else {
+                    Ok(GetRecordsResponse { count: 1, counter: 0, list: vec![make_record(2)] })
+                }
+            }
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "0");
+        assert_eq!(pages_fetched.load(Ordering::Relaxed), EARLY_STOP_GRACE_PAGES);
+    }
+
+    // Grace counter resets to zero whenever a matching record is found, so a
+    // sequence of miss/match/miss/match pages does not trigger early stop.
+    #[tokio::test]
+    async fn grace_counter_resets_on_match() {
+        use std::sync::{Arc, Mutex};
+        use std::collections::VecDeque;
+
+        let mut pages: Vec<GetRecordsResponse> = Vec::new();
+        for _ in 0..2 {
+            for _ in 0..(EARLY_STOP_GRACE_PAGES - 1) {
+                pages.push(GetRecordsResponse { count: 1, counter: 0, list: vec![make_record(1)] });
+            }
+            pages.push(GetRecordsResponse { count: 1, counter: 0, list: vec![make_record(2)] });
+        }
+        for _ in 0..EARLY_STOP_GRACE_PAGES {
+            pages.push(GetRecordsResponse { count: 1, counter: 0, list: vec![make_record(1)] });
+        }
+        pages.push(empty_page());
+
+        let queue: Arc<Mutex<VecDeque<GetRecordsResponse>>> =
+            Arc::new(Mutex::new(VecDeque::from(pages)));
+
+        let bootstrap = GetRecordsResponse {
+            count: 1,
+            counter: 0,
+            list: vec![make_record(0)],
+        };
+        let opts = FetchOptions {
+            record_filter: Some(Box::new(|r: &Record| {
+                r.id.parse::<usize>().map(|n| n % 2 == 0).unwrap_or(false)
+            })),
+        };
+        let result = fetch_all_sliding(bootstrap, FIRST_COUNTER, 1, opts, move |_c| {
+            let q = queue.clone();
+            async move { Ok(q.lock().unwrap().pop_front().unwrap_or_else(empty_page)) }
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(result.len(), 3);
+        assert!(result.iter().all(|r| r.id.parse::<usize>().unwrap() % 2 == 0));
     }
 }

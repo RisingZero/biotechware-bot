@@ -6,7 +6,7 @@ use tokio::time::sleep;
 use tracing::{error, info, instrument};
 
 use crate::biotech::models::{is_long_term, is_short_term, ListType, Record};
-use crate::biotech::BiotechwareApi;
+use crate::biotech::{BiotechwareApi, FetchOptions};
 use crate::cache::Cache;
 use crate::config::Config;
 use crate::telegram::TelegramBot;
@@ -64,7 +64,7 @@ async fn tick(
     cache: &mut Cache,
     first_tick: &mut bool,
 ) -> anyhow::Result<()> {
-    let records = api.fetch_all(ListType::Unreported).await?;
+    let records = api.fetch_all(ListType::Unreported, FetchOptions::default()).await?;
 
     // Persist (id -> service_level) so the resumes task can resolve specific
     // ECG subtypes even though its endpoint returns the generic name only.

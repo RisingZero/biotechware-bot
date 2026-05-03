@@ -7,7 +7,7 @@ use tokio::time::sleep;
 use tracing::{error, info, instrument};
 
 use crate::biotech::models::{ListType, Record};
-use crate::biotech::BiotechwareApi;
+use crate::biotech::{BiotechwareApi, FetchOptions};
 use crate::cache::Cache;
 use crate::config::Config;
 use crate::telegram::TelegramBot;
@@ -70,7 +70,7 @@ async fn tick(
     let month = now.month();
     let year = now.year();
 
-    let records = api.fetch_all(ListType::Reported).await?;
+    let records = api.fetch_all(ListType::Reported, FetchOptions::default()).await?;
     let this_month: Vec<&Record> = records
         .iter()
         .filter(|r| {
