@@ -3,17 +3,19 @@ services:
     image: redis:7-alpine
     container_name: biotech_redis
     restart: unless-stopped
-    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    command: [ "redis-server", "--save", "60", "1", "--loglevel", "warning" ]
     volumes:
       - redis_data:/data
-    networks: [biotech]
+    networks: [ biotech ]
+    ports:
+      - "6379:6379"
 
   biotech_bot_1:
     build: .
     image: biotechware-bot:latest
     container_name: biotech_bot_1
     restart: unless-stopped
-    depends_on: [redis]
+    depends_on: [ redis ]
     environment:
       USER_LABEL: ${BOT1_USER_LABEL}
       BTW_USERNAME: ${BOT1_BTW_USERNAME}
@@ -27,14 +29,14 @@ services:
       RUST_LOG: info,biotechware_bot=debug
     ports:
       - "9091:9090"
-    networks: [biotech]
+    networks: [ biotech ]
 
   biotech_bot_2:
     build: .
     image: biotechware-bot:latest
     container_name: biotech_bot_2
     restart: unless-stopped
-    depends_on: [redis]
+    depends_on: [ redis ]
     environment:
       USER_LABEL: ${BOT2_USER_LABEL}
       BTW_USERNAME: ${BOT2_BTW_USERNAME}
@@ -48,7 +50,7 @@ services:
       RUST_LOG: info,biotechware_bot=debug
     ports:
       - "9092:9090"
-    networks: [biotech]
+    networks: [ biotech ]
 
 volumes:
   redis_data:
