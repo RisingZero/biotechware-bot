@@ -4,8 +4,6 @@
 .env
 .rtk/
 
-Cargo.lock
-
 **/*.rs.bk
 
 *.pdb
