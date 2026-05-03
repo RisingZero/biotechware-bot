@@ -6,7 +6,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use reqwest::{Client, ClientBuilder, StatusCode};
 use tokio::sync::Mutex;
-use tracing::{info, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 use crate::errors::{Error, Result};
 use crate::retry::{self, RetryConfig};
@@ -26,10 +26,11 @@ pub struct BiotechwareApi {
     username: String,
     password: String,
     last_login: Mutex<Option<DateTime<Utc>>>,
+    max_concurrent: usize,
 }
 
 impl BiotechwareApi {
-    pub fn new(username: String, password: String) -> Result<Arc<Self>> {
+    pub fn new(username: String, password: String, max_concurrent: usize) -> Result<Arc<Self>> {
         let client = ClientBuilder::new()
             .cookie_store(true)
             .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
@@ -39,6 +40,7 @@ impl BiotechwareApi {
             username,
             password,
             last_login: Mutex::new(None),
+            max_concurrent,
         }))
     }
 
@@ -86,6 +88,7 @@ impl BiotechwareApi {
             }
         };
         if !needs {
+            debug!("session valid, skipping login");
             return Ok(());
         }
         self.force_login().await
@@ -99,6 +102,7 @@ impl BiotechwareApi {
     ) -> Result<GetRecordsResponse> {
         self.ensure_login().await?;
 
+        debug!(list_type = list_type.to_str(), counter, "fetching page");
         let api = &*self;
         let client = self.client.clone();
         let timer = crate::metrics::get()
@@ -144,6 +148,12 @@ impl BiotechwareApi {
         .await?;
         timer.observe_duration();
 
+        debug!(
+            list_type = list_type.to_str(),
+            count = result.count,
+            next_counter = result.counter,
+            "page received"
+        );
         crate::metrics::get()
             .fetch_pages_total
             .with_label_values(&[list_type.to_str()])
@@ -166,6 +176,13 @@ impl BiotechwareApi {
             if page.count <= 0 || page.list.is_empty() {
                 break;
             }
+            debug!(
+                list_type = list_type.to_str(),
+                page_count = page.count,
+                total_so_far = all.len() + page.list.len(),
+                counter,
+                "page fetched"
+            );
             counter += page.count;
             all.extend(page.list);
         }

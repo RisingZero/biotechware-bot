@@ -28,6 +28,7 @@ async fn main() -> anyhow::Result<()> {
     let api = biotech::BiotechwareApi::new(
         cfg.btw_username.clone(),
         cfg.btw_password.clone(),
+        cfg.fetch_max_concurrent,
     )?;
     let cache_checker = cache::Cache::connect(&cfg.redis_url, &cfg.user_label).await?;
     let cache_resumes = cache::Cache::connect(&cfg.redis_url, &cfg.user_label).await?;
@@ -64,8 +65,13 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,biotechware_bot=debug"));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        if let Ok(lvl) = std::env::var("LOG_LEVEL") {
+            EnvFilter::new(format!("{lvl},biotechware_bot={lvl}"))
+        } else {
+            EnvFilter::new("info,biotechware_bot=debug")
+        }
+    });
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(true)
