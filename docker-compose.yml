@@ -1,0 +1,58 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: biotech_redis
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    volumes:
+      - redis_data:/data
+    networks: [biotech]
+
+  biotech_acammarata:
+    build: .
+    image: biotechware-bot:latest
+    container_name: biotech_acammarata
+    restart: unless-stopped
+    depends_on: [redis]
+    environment:
+      USER_LABEL: acammarata
+      BTW_USERNAME: REDACTED_USERNAME
+      BTW_PASSWORD: ${BTW_PASSWORD_ACAMMARATA}
+      TG_TOKEN: ${TG_TOKEN}
+      TG_CHAT_ID: REDACTED_CHAT_ID
+      REDIS_URL: redis://redis:6379
+      METRICS_ADDR: 0.0.0.0:9090
+      CHECKER_INTERVAL_SECS: "180"
+      RESUMES_INTERVAL_SECS: "21600"
+      RUST_LOG: info,biotechware_bot=debug
+    ports:
+      - "9091:9090"
+    networks: [biotech]
+
+  biotech_mraineri:
+    build: .
+    image: biotechware-bot:latest
+    container_name: biotech_mraineri
+    restart: unless-stopped
+    depends_on: [redis]
+    environment:
+      USER_LABEL: mraineri
+      BTW_USERNAME: REDACTED_USERNAME
+      BTW_PASSWORD: ${BTW_PASSWORD_MRAINERI}
+      TG_TOKEN: ${TG_TOKEN}
+      TG_CHAT_ID: REDACTED_CHAT_ID
+      REDIS_URL: redis://redis:6379
+      METRICS_ADDR: 0.0.0.0:9090
+      CHECKER_INTERVAL_SECS: "180"
+      RESUMES_INTERVAL_SECS: "21600"
+      RUST_LOG: info,biotechware_bot=debug
+    ports:
+      - "9092:9090"
+    networks: [biotech]
+
+volumes:
+  redis_data:
+
+networks:
+  biotech:
+    driver: bridge

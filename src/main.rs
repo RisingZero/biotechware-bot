@@ -1,89 +1,73 @@
-pub mod biotechware;
-pub mod telegram;
+mod biotech;
+mod cache;
+mod config;
+mod errors;
+mod metrics;
+mod retry;
+mod server;
+mod tasks;
+mod telegram;
 
-use biotechware::{BiotechwareApi, ListType, RecordType};
-use chrono::{Utc, Datelike, Month};
-use std::collections::HashMap;
-use std::env;
-
-async fn resumes_main() {
-    let mut biotech = BiotechwareApi::new(
-        env::var("BTW_USERNAME").unwrap(),
-        env::var("BTW_PASSWORD").unwrap(),
-    );
-    let telegram = telegram::TelegramBot::new(
-        env::var("TG_TOKEN_RESUMES").unwrap(),
-        env::var("TG_CHAT_ID_RESUMES").unwrap(),
-    );
-
-    loop {
-        let mut stats: HashMap<RecordType,f64> = HashMap::new();
-
-        let records = biotech.get_records_of_month(
-            ListType::Reported, 
-            Month::try_from(u8::try_from(Utc::now().month()).unwrap()).unwrap()
-        ).await.unwrap();
-
-        records.into_iter().for_each(|r| {
-            match stats.get_mut(&r.record_type_id) {
-                Some(v) => {
-                    *v += r.record_type_id.price_value();
-                },
-                None => {
-                    stats.insert(r.record_type_id, r.record_type_id.price_value());
-                }
-            }
-        });
-
-        let total_taxed = stats.values().sum::<f64>() * (1.0 - biotechware::TAX_RATE);
-        let mut message = String::new();
-        stats.into_iter().for_each(|(k,v)| {
-            message.push_str(format!("{}: {:.2}€\n", k.to_str(), v).as_str());
-        });
-        message.push_str(format!("Totale (tassato): {:.2}€", total_taxed).as_str());
-        telegram.send_message(message).await;
-
-        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-        //tokio::time::sleep(tokio::time::Duration::from_secs(3600*3)).await;
-        break; // TO REMOVE
-    }
-
-}
-
-async fn checker_main() {
-    let mut biotech = BiotechwareApi::new(
-        env::var("BTW_USERNAME").unwrap(),
-        env::var("BTW_PASSWORD").unwrap(),
-    );
-    
-    loop {
-        let records = biotech.get_all_records(ListType::Unreported).await.unwrap();
-
-        println!("{:?}", records);
-        tokio::time::sleep(tokio::time::Duration::from_secs(4)).await;
-        break;
-    }
-}
-
+use std::sync::Arc;
+use tracing::{error, info};
+use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    dotenv::dotenv().ok();
+async fn main() -> anyhow::Result<()> {
+    init_tracing();
 
-    let rh = tokio::spawn(
-        async move {
-            resumes_main().await
+    let cfg = Arc::new(config::Config::from_env()?);
+    metrics::init(&cfg.user_label);
+
+    info!(user = %cfg.user_label, "starting biotechware-bot");
+
+    let telegram = Arc::new(telegram::TelegramBot::new(
+        cfg.tg_token.clone(),
+        cfg.tg_chat_id.clone(),
+    ));
+    let api = biotech::BiotechwareApi::new(
+        cfg.btw_username.clone(),
+        cfg.btw_password.clone(),
+    )?;
+    let cache_checker = cache::Cache::connect(&cfg.redis_url, &cfg.user_label).await?;
+    let cache_resumes = cache::Cache::connect(&cfg.redis_url, &cfg.user_label).await?;
+
+    let metrics_addr: std::net::SocketAddr = cfg
+        .metrics_addr
+        .parse()
+        .map_err(|e| anyhow::anyhow!("invalid METRICS_ADDR {}: {e}", cfg.metrics_addr))?;
+    let metrics_task = tokio::spawn(async move {
+        if let Err(e) = server::serve(metrics_addr).await {
+            error!(error = ?e, "metrics server stopped");
         }
-    );
+    });
 
-    let ch = tokio::spawn(
-        async move {
-            checker_main().await
-        }
-    );
+    let checker_task = {
+        let api = api.clone();
+        let tg = telegram.clone();
+        let cfg = cfg.clone();
+        tokio::spawn(async move { tasks::checker::run(api, tg, cache_checker, cfg).await })
+    };
+    let resumes_task = {
+        let api = api.clone();
+        let tg = telegram.clone();
+        let cfg = cfg.clone();
+        tokio::spawn(async move { tasks::resumes::run(api, tg, cache_resumes, cfg).await })
+    };
 
-    //rh.await?;
-    ch.await?;
-
+    tokio::signal::ctrl_c().await?;
+    info!("shutdown signal received, aborting tasks");
+    metrics_task.abort();
+    checker_task.abort();
+    resumes_task.abort();
     Ok(())
+}
+
+fn init_tracing() {
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info,biotechware_bot=debug"));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(true)
+        .init();
 }

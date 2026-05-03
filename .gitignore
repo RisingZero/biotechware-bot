@@ -2,6 +2,7 @@
 /debug
 
 .env
+.rtk/
 
 Cargo.lock
 

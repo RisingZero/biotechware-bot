@@ -1,14 +1,25 @@
 [package]
-name = "biotechware-bot-checker"
-version = "0.1.0"
+name = "biotechware-bot"
+version = "0.2.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[[bin]]
+name = "biotechware-bot"
+path = "src/main.rs"
 
 [dependencies]
-serde = { version = "1.0.164",  features = ["derive"] }
-reqwest = { version = "0.11", features = ["json", "cookies"] }
 tokio = { version = "1", features = ["full"] }
-futures = "0.3.28"
-chrono = { version = "0.4.26", features = ["serde"] }
-dotenv = "0.15.0"
+futures = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "cookies", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+redis = { version = "0.27", default-features = false, features = ["tokio-comp", "connection-manager"] }
+axum = "0.7"
+prometheus = "0.13"
+toml = "0.8"
+dotenvy = "0.15"

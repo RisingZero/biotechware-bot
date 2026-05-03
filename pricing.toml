@@ -1,0 +1,23 @@
+# Pricing config for the resumes (billing) bot.
+# Source of truth for prices is biotech_resumes/main.py (Python implementation).
+# Edit and reload by restarting the container.
+
+tax_rate = 0.20
+
+# Price per record type, keyed by record_type_name as returned by the API.
+[record_type_prices]
+"ECG a riposo" = 4.0
+"ECG24" = 3.0
+"ECG90" = 4.0
+"ECG20" = 5.0
+"ABPM" = 6.0
+"ECG holter" = 10.0
+
+# When the resumes API returns a generic record_type_name (e.g. "ECG a riposo"),
+# but the checker has cached the effectiveServiceLevel for that record id,
+# this mapping translates the service level into the more specific record type
+# whose price applies. Unmapped service levels fall back to record_type_name.
+[service_level_to_type]
+"TR-ECG-90" = "ECG90"
+"TR-ECG-20" = "ECG20"
+"TR-ECG-DAY" = "ECG24"
