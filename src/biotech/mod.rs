@@ -8,6 +8,9 @@ use reqwest::{Client, ClientBuilder, StatusCode};
 use tokio::sync::Mutex;
 use tracing::{debug, info, instrument, warn};
 
+use futures::stream::FuturesUnordered;
+use futures::{FutureExt, StreamExt};
+
 use crate::errors::{Error, Result};
 use crate::retry::{self, RetryConfig};
 use models::{GetRecordsRequest, GetRecordsResponse, ListType, LoginRequest, Record};
@@ -162,31 +165,168 @@ impl BiotechwareApi {
         Ok(result)
     }
 
-    /// Fetch every record of a given list type. Starts at counter = FIRST_COUNTER
-    /// to capture the records the API otherwise serves only via the HTML table,
-    /// then advances the counter by the number of items returned in each page
-    /// until the API reports zero.
     #[instrument(skip(self))]
-    pub async fn fetch_all(&self, list_type: ListType) -> Result<Vec<Record>> {
-        self.ensure_login().await?;
-        let mut all = Vec::new();
-        let mut counter = FIRST_COUNTER;
-        loop {
-            let page = self.fetch_page(list_type, counter).await?;
-            if page.count <= 0 || page.list.is_empty() {
-                break;
-            }
-            debug!(
-                list_type = list_type.to_str(),
-                page_count = page.count,
-                total_so_far = all.len() + page.list.len(),
-                counter,
-                "page fetched"
-            );
-            counter += page.count;
-            all.extend(page.list);
+    pub async fn fetch_all(&self, list_type: ListType) -> crate::errors::Result<Vec<Record>> {
+        let bootstrap = self.fetch_page(list_type, FIRST_COUNTER).await?;
+        if bootstrap.list.is_empty() || bootstrap.count <= 0 {
+            info!(list_type = list_type.to_str(), "no records found");
+            return Ok(vec![]);
         }
-        info!(n = all.len(), list_type = list_type.to_str(), "fetched all records");
-        Ok(all)
+        let records = fetch_all_sliding(bootstrap, FIRST_COUNTER, self.max_concurrent, |c| {
+            self.fetch_page(list_type, c)
+        })
+        .await?;
+        info!(n = records.len(), list_type = list_type.to_str(), "fetched all records");
+        Ok(records)
+    }
+}
+
+async fn fetch_all_sliding<F, Fut>(
+    bootstrap: GetRecordsResponse,
+    first_counter: i32,
+    max_concurrent: usize,
+    fetch: F,
+) -> crate::errors::Result<Vec<Record>>
+where
+    F: Fn(i32) -> Fut,
+    Fut: std::future::Future<Output = crate::errors::Result<GetRecordsResponse>> + Send,
+{
+    let page_size = bootstrap.count;
+    let max_concurrent = max_concurrent.max(1);
+    let mut results: Vec<(i32, Vec<Record>)> = vec![(first_counter, bootstrap.list)];
+    let mut pending: FuturesUnordered<std::pin::Pin<Box<dyn std::future::Future<Output = crate::errors::Result<(i32, GetRecordsResponse)>> + Send>>> = FuturesUnordered::new();
+    let mut next_counter = first_counter + page_size;
+    let mut stop = false;
+
+    for _ in 0..max_concurrent {
+        let c = next_counter;
+        pending.push(Box::pin(fetch(c).map(move |r| r.map(|p| (c, p)))));
+        next_counter += page_size;
+    }
+
+    while let Some(result) = pending.next().await {
+        let (counter, page) = result?;
+        if page.list.is_empty() || page.count <= 0 {
+            stop = true;
+        } else {
+            results.push((counter, page.list));
+            if !stop {
+                let c = next_counter;
+                pending.push(Box::pin(fetch(c).map(move |r| r.map(|p| (c, p)))));
+                next_counter += page_size;
+            }
+        }
+    }
+
+    results.sort_unstable_by_key(|(c, _)| *c);
+    Ok(results.into_iter().flat_map(|(_, records)| records).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use models::{GetRecordsResponse, Record};
+
+    fn make_record(id: usize) -> Record {
+        Record {
+            id: id.to_string(),
+            status: String::new(),
+            timezone_indication: None,
+            last_report_revision: None,
+            last_report_date: None,
+            record_type_id: None,
+            record_type_name: String::new(),
+            firstname: None,
+            lastname: None,
+            url: None,
+            health_code: None,
+            reception_date: None,
+            date: None,
+            requester: None,
+            effective_service_level: None,
+        }
+    }
+
+    fn make_page(n: usize) -> GetRecordsResponse {
+        GetRecordsResponse {
+            count: n as i32,
+            counter: 0,
+            list: (0..n).map(make_record).collect(),
+        }
+    }
+
+    fn empty_page() -> GetRecordsResponse {
+        GetRecordsResponse { count: 0, counter: 0, list: vec![] }
+    }
+
+    // Single bootstrap page with no further data.
+    #[tokio::test]
+    async fn only_bootstrap_page() {
+        let bootstrap = make_page(5);
+        let result = fetch_all_sliding(bootstrap, FIRST_COUNTER, 2, |_c| async {
+            Ok(empty_page())
+        })
+        .await
+        .unwrap();
+        assert_eq!(result.len(), 5);
+    }
+
+    // Three pages of 10 records each, then empty.
+    #[tokio::test]
+    async fn collects_multiple_pages() {
+        use std::sync::{Arc, Mutex};
+        use std::collections::VecDeque;
+
+        let queue: Arc<Mutex<VecDeque<GetRecordsResponse>>> = Arc::new(Mutex::new(
+            VecDeque::from(vec![
+                make_page(10), // speculative page 1
+                make_page(10), // speculative page 2
+                empty_page(),  // stop signal
+                empty_page(),  // drain for concurrent window
+            ]),
+        ));
+        let bootstrap = make_page(10);
+        let result = fetch_all_sliding(bootstrap, FIRST_COUNTER, 2, move |_c| {
+            let q = queue.clone();
+            async move {
+                Ok(q.lock().unwrap().pop_front().unwrap_or_else(empty_page))
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(result.len(), 30);
+    }
+
+    // An error from fetch_page propagates immediately.
+    #[tokio::test]
+    async fn propagates_fetch_error() {
+        use crate::errors::Error;
+        let bootstrap = make_page(10);
+        let result = fetch_all_sliding(bootstrap, FIRST_COUNTER, 1, |_c| async {
+            Err(Error::BadStatus { endpoint: "test", status: 500 })
+        })
+        .await;
+        assert!(result.is_err());
+    }
+
+    // Records arrive sorted by counter regardless of completion order.
+    #[tokio::test]
+    async fn results_ordered_by_counter() {
+        use std::sync::{Arc, Mutex};
+        use std::collections::VecDeque;
+
+        let bootstrap = make_page(1);
+        let queue: Arc<Mutex<VecDeque<GetRecordsResponse>>> = Arc::new(Mutex::new(
+            VecDeque::from(vec![make_page(1), make_page(1), empty_page(), empty_page()]),
+        ));
+        let result = fetch_all_sliding(bootstrap, FIRST_COUNTER, 2, move |_c| {
+            let q = queue.clone();
+            async move {
+                Ok(q.lock().unwrap().pop_front().unwrap_or_else(empty_page))
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(result.len(), 3);
     }
 }
