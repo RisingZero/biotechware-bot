@@ -183,6 +183,17 @@ impl BiotechwareApi {
             info!(list_type = list_type.to_str(), "no records found");
             return Ok(vec![]);
         }
+        // A bootstrap page with fewer records than the initial counter offset
+        // means the entire dataset fits in this single response — no further
+        // pages exist. Apply the filter and return immediately.
+        if bootstrap.count < -FIRST_COUNTER {
+            let records: Vec<Record> = match &opts.record_filter {
+                Some(f) => bootstrap.list.into_iter().filter(|r| f(r)).collect(),
+                None => bootstrap.list,
+            };
+            info!(n = records.len(), list_type = list_type.to_str(), "fetched all records (single page)");
+            return Ok(records);
+        }
         let records = fetch_all_sliding(bootstrap, FIRST_COUNTER, self.max_concurrent, opts, |c| {
             self.fetch_page(list_type, c)
         })
