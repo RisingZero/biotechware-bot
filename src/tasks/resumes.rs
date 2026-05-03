@@ -70,15 +70,14 @@ async fn tick(
     let month = now.month();
     let year = now.year();
 
-    let records = api.fetch_all(ListType::Reported, FetchOptions::default()).await?;
-    let this_month: Vec<&Record> = records
-        .iter()
-        .filter(|r| {
+    let opts = FetchOptions {
+        record_filter: Some(Box::new(move |r: &Record| {
             r.last_report_date
                 .map(|d| d.month() == month && d.year() == year)
                 .unwrap_or(false)
-        })
-        .collect();
+        })),
+    };
+    let this_month: Vec<Record> = api.fetch_all(ListType::Reported, opts).await?;
 
     // Look up cached service-level mapping populated by the checker.
     let ids: Vec<String> = this_month.iter().map(|r| r.id.clone()).collect();
