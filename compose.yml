@@ -28,7 +28,7 @@ services:
       CHECKER_INTERVAL_SECS: "180"
       RESUMES_INTERVAL_SECS: "21600"
       FETCH_MAX_CONCURRENT: ${FETCH_MAX_CONCURRENT:-8}
-      RUST_LOG: debug
+      RUST_LOG: info
     ports:
       - "9091:9090"
     networks: [ biotech ]
@@ -51,7 +51,7 @@ services:
       CHECKER_INTERVAL_SECS: "180"
       RESUMES_INTERVAL_SECS: "21600"
       FETCH_MAX_CONCURRENT: ${FETCH_MAX_CONCURRENT:-8}
-      RUST_LOG: info,biotechware_bot=debug
+      RUST_LOG: info
     ports:
       - "9092:9090"
     networks: [ biotech ]
