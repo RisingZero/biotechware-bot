@@ -13,6 +13,7 @@ pub struct Config {
     pub metrics_addr: String,
     pub checker_interval_secs: u64,
     pub resumes_interval_secs: u64,
+    pub fetch_max_concurrent: usize,
     pub pricing: Pricing,
 }
 
@@ -49,6 +50,7 @@ impl Config {
             metrics_addr: env_or("METRICS_ADDR", "0.0.0.0:9090"),
             checker_interval_secs: env_or("CHECKER_INTERVAL_SECS", "180").parse()?,
             resumes_interval_secs: env_or("RESUMES_INTERVAL_SECS", "21600").parse()?,
+            fetch_max_concurrent: env_or("FETCH_MAX_CONCURRENT", "8").parse()?,
             pricing,
         })
     }
