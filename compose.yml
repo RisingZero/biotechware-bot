@@ -7,8 +7,8 @@ services:
     volumes:
       - redis_data:/data
     networks: [ biotech ]
-    ports:
-      - "6379:6379"
+    #ports:
+    #  - "6379:6379"
 
   biotech_bot_1:
     build: .
@@ -23,10 +23,12 @@ services:
       TG_TOKEN: ${TG_TOKEN}
       TG_CHAT_ID: ${BOT1_TG_CHAT_ID}
       REDIS_URL: redis://redis:6379
+      PRICING_FILE: /app/pricing.toml
       METRICS_ADDR: 0.0.0.0:9090
       CHECKER_INTERVAL_SECS: "180"
       RESUMES_INTERVAL_SECS: "21600"
-      RUST_LOG: info,biotechware_bot=debug
+      FETCH_MAX_CONCURRENT: ${FETCH_MAX_CONCURRENT:-8}
+      RUST_LOG: debug
     ports:
       - "9091:9090"
     networks: [ biotech ]
@@ -44,9 +46,11 @@ services:
       TG_TOKEN: ${TG_TOKEN}
       TG_CHAT_ID: ${BOT2_TG_CHAT_ID}
       REDIS_URL: redis://redis:6379
+      PRICING_FILE: /app/pricing.toml
       METRICS_ADDR: 0.0.0.0:9090
       CHECKER_INTERVAL_SECS: "180"
       RESUMES_INTERVAL_SECS: "21600"
+      FETCH_MAX_CONCURRENT: ${FETCH_MAX_CONCURRENT:-8}
       RUST_LOG: info,biotechware_bot=debug
     ports:
       - "9092:9090"
