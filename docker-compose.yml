@@ -8,18 +8,18 @@ services:
       - redis_data:/data
     networks: [biotech]
 
-  biotech_acammarata:
+  biotech_bot_1:
     build: .
     image: biotechware-bot:latest
-    container_name: biotech_acammarata
+    container_name: biotech_bot_1
     restart: unless-stopped
     depends_on: [redis]
     environment:
-      USER_LABEL: acammarata
-      BTW_USERNAME: REDACTED_USERNAME
-      BTW_PASSWORD: ${BTW_PASSWORD_ACAMMARATA}
+      USER_LABEL: ${BOT1_USER_LABEL}
+      BTW_USERNAME: ${BOT1_BTW_USERNAME}
+      BTW_PASSWORD: ${BOT1_BTW_PASSWORD}
       TG_TOKEN: ${TG_TOKEN}
-      TG_CHAT_ID: REDACTED_CHAT_ID
+      TG_CHAT_ID: ${BOT1_TG_CHAT_ID}
       REDIS_URL: redis://redis:6379
       METRICS_ADDR: 0.0.0.0:9090
       CHECKER_INTERVAL_SECS: "180"
@@ -29,18 +29,18 @@ services:
       - "9091:9090"
     networks: [biotech]
 
-  biotech_mraineri:
+  biotech_bot_2:
     build: .
     image: biotechware-bot:latest
-    container_name: biotech_mraineri
+    container_name: biotech_bot_2
     restart: unless-stopped
     depends_on: [redis]
     environment:
-      USER_LABEL: mraineri
-      BTW_USERNAME: REDACTED_USERNAME
-      BTW_PASSWORD: ${BTW_PASSWORD_MRAINERI}
+      USER_LABEL: ${BOT2_USER_LABEL}
+      BTW_USERNAME: ${BOT2_BTW_USERNAME}
+      BTW_PASSWORD: ${BOT2_BTW_PASSWORD}
       TG_TOKEN: ${TG_TOKEN}
-      TG_CHAT_ID: REDACTED_CHAT_ID
+      TG_CHAT_ID: ${BOT2_TG_CHAT_ID}
       REDIS_URL: redis://redis:6379
       METRICS_ADDR: 0.0.0.0:9090
       CHECKER_INTERVAL_SECS: "180"
