@@ -3,7 +3,7 @@ pub mod models;
 use models::SendMessageBody;
 use reqwest::Client;
 use std::time::Duration;
-use tracing::{instrument, warn};
+use tracing::{debug, instrument, warn};
 
 pub struct TelegramBot {
     client: Client,
@@ -35,6 +35,7 @@ impl TelegramBot {
         };
         match self.client.post(&url).json(&body).send().await {
             Ok(r) if r.status().is_success() => {
+                debug!(len = text.len(), "telegram message sent");
                 crate::metrics::get()
                     .telegram_send_total
                     .with_label_values(&["ok"])
