@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use chrono::{Datelike, Utc};
 use tokio::time::sleep;
-use tracing::{error, info, instrument};
+use tracing::{error, info, debug, instrument};
 
 use crate::biotech::models::{ListType, Record};
 use crate::biotech::{BiotechwareApi, FetchOptions};
@@ -81,14 +81,15 @@ async fn tick(
 
     // Look up cached service-level mapping populated by the checker.
     let ids: Vec<String> = this_month.iter().map(|r| r.id.clone()).collect();
-    let levels = cache.get_service_levels(&ids).await.unwrap_or_default();
+    let cached_levels = cache.get_service_levels(&ids).await.unwrap_or_default();
 
     // Resolve effective record_type_name per record; prefer the cached service
     // level mapping when available so that ECG subtypes (20/90/DAY) are
     // priced correctly instead of collapsing into "ECG a riposo".
     let mut by_type: HashMap<String, usize> = HashMap::new();
     for r in &this_month {
-        let name = match levels.get(&r.id) {
+        let cached_sl = cached_levels.get(&r.id).cloned();
+        let mut name = match cached_sl.as_deref() {
             Some(sl) => cfg
                 .pricing
                 .service_level_to_type
@@ -97,6 +98,17 @@ async fn tick(
                 .unwrap_or_else(|| r.record_type_name.clone()),
             None => r.record_type_name.clone(),
         };
+        // If `record_type_name` is missing (serde default -> empty string),
+        // fall back to the effective service level or a placeholder so
+        // pricing lookup doesn't get an empty key.
+        if name.is_empty() {
+            debug!(record_id = %r.id, record_type_name = %r.record_type_name, ?cached_sl, ?r.effective_service_level, "resolved name empty — logging record details");
+            name = r
+                .effective_service_level
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|| "Unknown".to_string());
+        }
         *by_type.entry(name).or_insert(0) += 1;
     }
 
@@ -105,6 +117,7 @@ async fn tick(
     let mut sorted: Vec<(&String, &usize)> = by_type.iter().collect();
     sorted.sort_by(|a, b| a.0.cmp(b.0));
     for (name, count) in sorted {
+        debug!("Record type {name} count {count}");
         match cfg.pricing.record_type_prices.get(name) {
             Some(price) => {
                 let amount = price * (*count as f64);

@@ -33,7 +33,7 @@ pub struct Record {
     #[serde(default)]
     pub status: String,
     pub id: String,
-    #[serde(default)]
+    #[serde(default, alias = "timezone_indication")]
     pub timezone_indication: Option<String>,
     #[serde(default)]
     pub last_report_revision: Option<String>,
@@ -41,7 +41,7 @@ pub struct Record {
     pub last_report_date: Option<DateTime<Utc>>,
     #[serde(default)]
     pub record_type_id: Option<i32>,
-    #[serde(default)]
+    #[serde(default, alias = "record_type_name")]
     pub record_type_name: String,
     #[serde(default)]
     pub firstname: Option<String>,
