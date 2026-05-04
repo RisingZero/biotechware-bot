@@ -235,4 +235,11 @@ mod tests {
         r.reception_date = None;
         assert!(r.deadline().is_none());
     }
+
+    #[test]
+    fn deadline_none_when_reception_date_malformed() {
+        let mut r = record_with_deadline("4", "2026-05-04T10:00:00.000+0000", "TR-ECG-20");
+        r.reception_date = Some("not-a-date".to_string());
+        assert!(r.deadline().is_none());
+    }
 }
