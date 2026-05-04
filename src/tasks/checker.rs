@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use tokio::time::sleep;
 use tracing::{error, info, instrument};
 
@@ -179,6 +180,30 @@ fn sorted_lines(counts: &HashMap<String, usize>) -> Vec<String> {
         .collect()
 }
 
+fn find_next_expiring(records: &[Record]) -> Option<&Record> {
+    records
+        .iter()
+        .filter(|r| r.deadline().is_some())
+        .min_by_key(|r| r.deadline().unwrap())
+}
+
+fn render_expiry_line(record: &Record, now: DateTime<Utc>) -> String {
+    let sl = record.effective_service_level.as_deref().unwrap_or("?");
+    let deadline = record.deadline().unwrap();
+    let diff_mins = (deadline - now).num_minutes();
+    if diff_mins >= 0 {
+        format!(
+            "⏰ Prossima scadenza: {sl} — #{} — scade tra {} min",
+            record.id, diff_mins
+        )
+    } else {
+        format!(
+            "🔴 Prossima scadenza: {sl} — #{} — scaduta da {} min",
+            record.id, -diff_mins
+        )
+    }
+}
+
 fn render_summary(counts: &HashMap<String, usize>, total: usize) -> String {
     if total == 0 {
         return "Bot avviato. Nessun ECG in coda.".to_string();
@@ -209,5 +234,74 @@ fn render_all_clear(counts: &HashMap<String, usize>) -> String {
             "ECG tutti refertati, niente di nuovo :D\nResoconto attuale:\n{}",
             sorted_lines(&long_term).join("\n")
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    fn record_with_sl(id: &str, reception: &str, sl: &str) -> Record {
+        Record {
+            id: id.to_string(),
+            reception_date: Some(reception.to_string()),
+            effective_service_level: Some(sl.to_string()),
+            status: String::new(),
+            timezone_indication: None,
+            last_report_revision: None,
+            last_report_date: None,
+            record_type_id: None,
+            record_type_name: String::new(),
+            firstname: None,
+            lastname: None,
+            url: None,
+            health_code: None,
+            date: None,
+            requester: None,
+        }
+    }
+
+    #[test]
+    fn find_next_expiring_returns_earliest_deadline() {
+        let r1 = record_with_sl("1", "2026-05-04T10:00:00.000+0000", "TR-ECG-90");
+        let r2 = record_with_sl("2", "2026-05-04T10:00:00.000+0000", "TR-ECG-20");
+        let records = vec![r1, r2];
+        let next = find_next_expiring(&records).unwrap();
+        assert_eq!(next.id, "2");
+    }
+
+    #[test]
+    fn find_next_expiring_skips_records_with_no_sla() {
+        let r1 = record_with_sl("1", "2026-05-04T09:00:00.000+0000", "TR-HP-SOMETHING");
+        let r2 = record_with_sl("2", "2026-05-04T10:00:00.000+0000", "TR-ECG-20");
+        let records = vec![r1, r2];
+        let next = find_next_expiring(&records).unwrap();
+        assert_eq!(next.id, "2");
+    }
+
+    #[test]
+    fn find_next_expiring_empty_slice() {
+        assert!(find_next_expiring(&[]).is_none());
+    }
+
+    #[test]
+    fn render_expiry_line_not_yet_expired() {
+        let r = record_with_sl("1284221", "2026-05-04T10:00:00.000+0000", "TR-ECG-20");
+        let now = chrono::DateTime::parse_from_rfc3339("2026-05-04T10:08:00+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
+        let line = render_expiry_line(&r, now);
+        assert_eq!(line, "⏰ Prossima scadenza: TR-ECG-20 — #1284221 — scade tra 12 min");
+    }
+
+    #[test]
+    fn render_expiry_line_already_expired() {
+        let r = record_with_sl("1284221", "2026-05-04T10:00:00.000+0000", "TR-ECG-20");
+        let now = chrono::DateTime::parse_from_rfc3339("2026-05-04T10:25:00+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
+        let line = render_expiry_line(&r, now);
+        assert_eq!(line, "🔴 Prossima scadenza: TR-ECG-20 — #1284221 — scaduta da 5 min");
     }
 }
