@@ -132,3 +132,56 @@ pub fn is_long_term(service_level: Option<&str>) -> bool {
         None => false,
     }
 }
+
+pub fn sla_duration(sl: Option<&str>) -> Option<chrono::Duration> {
+    let s = sl?;
+    if s.contains("ECG-20") {
+        Some(chrono::Duration::minutes(20))
+    } else if s.contains("ECG-90") {
+        Some(chrono::Duration::minutes(90))
+    } else if s.contains("ECG-DAY") {
+        Some(chrono::Duration::hours(24))
+    } else if s.contains("HC-24") {
+        Some(chrono::Duration::hours(24))
+    } else if s.contains("HC-48") {
+        Some(chrono::Duration::hours(48))
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sla_ecg20() {
+        assert_eq!(sla_duration(Some("TR-ECG-20")), Some(chrono::Duration::minutes(20)));
+    }
+
+    #[test]
+    fn sla_ecg90() {
+        assert_eq!(sla_duration(Some("TR-ECG-90")), Some(chrono::Duration::minutes(90)));
+    }
+
+    #[test]
+    fn sla_ecg_day() {
+        assert_eq!(sla_duration(Some("TR-ECG-DAY")), Some(chrono::Duration::hours(24)));
+    }
+
+    #[test]
+    fn sla_hc24() {
+        assert_eq!(sla_duration(Some("TR-HC-24")), Some(chrono::Duration::hours(24)));
+    }
+
+    #[test]
+    fn sla_hc48() {
+        assert_eq!(sla_duration(Some("TR-HC-48")), Some(chrono::Duration::hours(48)));
+    }
+
+    #[test]
+    fn sla_unknown_and_none() {
+        assert_eq!(sla_duration(Some("TR-HP-SOMETHING")), None);
+        assert_eq!(sla_duration(None), None);
+    }
+}
