@@ -204,6 +204,21 @@ fn render_expiry_line(record: &Record, now: DateTime<Utc>) -> String {
     }
 }
 
+fn render_queue_summary(
+    counts: &HashMap<String, usize>,
+    total: usize,
+    expiry_line: Option<String>,
+) -> String {
+    let mut parts = vec![
+        format!("Coda attuale ({total}):"),
+        sorted_lines(counts).join("\n"),
+    ];
+    if let Some(line) = expiry_line {
+        parts.push(line);
+    }
+    parts.join("\n")
+}
+
 fn render_summary(counts: &HashMap<String, usize>, total: usize) -> String {
     if total == 0 {
         return "Bot avviato. Nessun ECG in coda.".to_string();
@@ -303,5 +318,27 @@ mod tests {
             .with_timezone(&Utc);
         let line = render_expiry_line(&r, now);
         assert_eq!(line, "🔴 Prossima scadenza: TR-ECG-20 — #1284221 — scaduta da 5 min");
+    }
+
+    #[test]
+    fn render_queue_summary_without_expiry() {
+        let mut counts = HashMap::new();
+        counts.insert("TR-ECG-20".to_string(), 2);
+        counts.insert("TR-HC-24".to_string(), 1);
+        let s = render_queue_summary(&counts, 3, None);
+        assert!(s.contains("Coda attuale (3):"));
+        assert!(s.contains("TR-ECG-20: 2"));
+        assert!(s.contains("TR-HC-24: 1"));
+        assert!(!s.contains("scadenza"));
+    }
+
+    #[test]
+    fn render_queue_summary_with_expiry_line() {
+        let mut counts = HashMap::new();
+        counts.insert("TR-ECG-20".to_string(), 1);
+        let expiry = "⏰ Prossima scadenza: TR-ECG-20 — #99 — scade tra 5 min".to_string();
+        let s = render_queue_summary(&counts, 1, Some(expiry));
+        assert!(s.contains("Coda attuale (1):"));
+        assert!(s.contains("scadenza"));
     }
 }
