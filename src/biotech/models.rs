@@ -61,6 +61,15 @@ pub struct Record {
     pub effective_service_level: Option<String>,
 }
 
+impl Record {
+    pub fn deadline(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        let date_str = self.reception_date.as_deref()?;
+        let parsed = chrono::DateTime::parse_from_str(date_str, "%Y-%m-%dT%H:%M:%S%.f%z").ok()?;
+        let duration = sla_duration(self.effective_service_level.as_deref())?;
+        Some(parsed.with_timezone(&chrono::Utc) + duration)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ListType {
     Reported,
@@ -183,5 +192,47 @@ mod tests {
     fn sla_unknown_and_none() {
         assert_eq!(sla_duration(Some("TR-HP-SOMETHING")), None);
         assert_eq!(sla_duration(None), None);
+    }
+
+    fn record_with_deadline(id: &str, reception: &str, sl: &str) -> Record {
+        Record {
+            id: id.to_string(),
+            reception_date: Some(reception.to_string()),
+            effective_service_level: Some(sl.to_string()),
+            status: String::new(),
+            timezone_indication: None,
+            last_report_revision: None,
+            last_report_date: None,
+            record_type_id: None,
+            record_type_name: String::new(),
+            firstname: None,
+            lastname: None,
+            url: None,
+            health_code: None,
+            date: None,
+            requester: None,
+        }
+    }
+
+    #[test]
+    fn deadline_ecg20_adds_20_min() {
+        let r = record_with_deadline("1", "2026-05-04T10:00:00.000+0000", "TR-ECG-20");
+        let expected = chrono::DateTime::parse_from_rfc3339("2026-05-04T10:20:00+00:00")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert_eq!(r.deadline(), Some(expected));
+    }
+
+    #[test]
+    fn deadline_none_when_no_sla() {
+        let r = record_with_deadline("2", "2026-05-04T10:00:00.000+0000", "TR-HP-SOMETHING");
+        assert!(r.deadline().is_none());
+    }
+
+    #[test]
+    fn deadline_none_when_no_reception_date() {
+        let mut r = record_with_deadline("3", "2026-05-04T10:00:00.000+0000", "TR-ECG-20");
+        r.reception_date = None;
+        assert!(r.deadline().is_none());
     }
 }
