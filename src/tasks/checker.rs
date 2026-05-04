@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use tokio::time::sleep;
 use tracing::{error, info, instrument};
 
-use crate::biotech::models::{is_long_term, is_short_term, ListType, Record};
+use crate::biotech::models::{is_short_term, ListType, Record};
 use crate::biotech::{BiotechwareApi, FetchOptions};
 use crate::cache::Cache;
 use crate::config::Config;
@@ -91,11 +91,15 @@ async fn tick(
         telegram.send(&msg, false).await;
         *first_tick = false;
     } else {
+        let now = Utc::now();
         let new: Vec<&Record> = records
             .iter()
             .filter(|r| !known_ids.contains(&r.id))
             .collect();
         let removed_count = known_ids.iter().filter(|id| !current_ids.contains(*id)).count();
+
+        let expiry_line = find_next_expiring(&records)
+            .map(|r| render_expiry_line(r, now));
 
         if !new.is_empty() {
             let mut new_counts: HashMap<String, usize> = HashMap::new();
@@ -107,18 +111,24 @@ async fn tick(
                     .with_label_values(&[&bucket])
                     .inc();
             }
-            telegram.send(&render_new(&new_counts), false).await;
+            telegram
+                .send(&render_new(&new_counts, &counts, records.len(), expiry_line.clone()), false)
+                .await;
         }
 
-        // "Tutti refertati" rule: something was removed AND no short-term ECG
-        // remains in queue.
-        let any_short_term_remaining = counts
-            .keys()
-            .any(|sl| is_short_term(Some(sl.as_str())));
-        if removed_count > 0 && !any_short_term_remaining {
-            telegram
-                .send(&render_all_clear(&counts), false)
-                .await;
+        if removed_count > 0 {
+            let any_short_term_remaining = counts
+                .keys()
+                .any(|sl| is_short_term(Some(sl.as_str())));
+            if !any_short_term_remaining && records.is_empty() {
+                telegram
+                    .send("ECG tutti refertati, niente di altro :D", false)
+                    .await;
+            } else {
+                telegram
+                    .send(&render_queue_summary(&counts, records.len(), expiry_line), false)
+                    .await;
+            }
         }
     }
 
@@ -157,11 +167,8 @@ fn publish_gauges(counts: &HashMap<String, usize>) {
 }
 
 fn priority(bucket: &str) -> u8 {
-    let s = Some(bucket);
-    if is_short_term(s) {
+    if is_short_term(Some(bucket)) {
         0
-    } else if is_long_term(s) {
-        2
     } else {
         1
     }
@@ -229,27 +236,17 @@ fn render_summary(counts: &HashMap<String, usize>, total: usize) -> String {
     )
 }
 
-fn render_new(new_counts: &HashMap<String, usize>) -> String {
+fn render_new(
+    new_counts: &HashMap<String, usize>,
+    all_counts: &HashMap<String, usize>,
+    total: usize,
+    expiry_line: Option<String>,
+) -> String {
     format!(
-        "Nuovi ECG disponibili\n{}",
-        sorted_lines(new_counts).join("\n")
+        "Nuovi ECG disponibili\n{}\n\n{}",
+        sorted_lines(new_counts).join("\n"),
+        render_queue_summary(all_counts, total, expiry_line)
     )
-}
-
-fn render_all_clear(counts: &HashMap<String, usize>) -> String {
-    let long_term: HashMap<String, usize> = counts
-        .iter()
-        .filter(|(sl, _)| is_long_term(Some(sl.as_str())))
-        .map(|(k, v)| (k.clone(), *v))
-        .collect();
-    if long_term.is_empty() {
-        "ECG tutti refertati, niente di nuovo :D\nNiente di altro.".to_string()
-    } else {
-        format!(
-            "ECG tutti refertati, niente di nuovo :D\nResoconto attuale:\n{}",
-            sorted_lines(&long_term).join("\n")
-        )
-    }
 }
 
 #[cfg(test)]
@@ -340,5 +337,19 @@ mod tests {
         let s = render_queue_summary(&counts, 1, Some(expiry));
         assert!(s.contains("Coda attuale (1):"));
         assert!(s.contains("scadenza"));
+    }
+
+    #[test]
+    fn render_new_includes_summary_block() {
+        let mut new_counts = HashMap::new();
+        new_counts.insert("TR-ECG-20".to_string(), 1);
+        let mut all_counts = HashMap::new();
+        all_counts.insert("TR-ECG-20".to_string(), 2);
+        all_counts.insert("TR-HC-24".to_string(), 1);
+        let s = render_new(&new_counts, &all_counts, 3, None);
+        assert!(s.contains("Nuovi ECG disponibili"));
+        assert!(s.contains("TR-ECG-20: 1"));
+        assert!(s.contains("Coda attuale (3):"));
+        assert!(s.contains("TR-HC-24: 1"));
     }
 }
