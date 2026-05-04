@@ -99,7 +99,7 @@ async fn tick(
         let removed_count = known_ids.iter().filter(|id| !current_ids.contains(*id)).count();
 
         let expiry_line = find_next_expiring(&records)
-            .map(|r| render_expiry_line(r, now));
+            .map(|r| render_expiry_line(r, r.deadline().unwrap(), now));
 
         if !new.is_empty() {
             let mut new_counts: HashMap<String, usize> = HashMap::new();
@@ -194,9 +194,8 @@ fn find_next_expiring(records: &[Record]) -> Option<&Record> {
         .min_by_key(|r| r.deadline().unwrap())
 }
 
-fn render_expiry_line(record: &Record, now: DateTime<Utc>) -> String {
+fn render_expiry_line(record: &Record, deadline: DateTime<Utc>, now: DateTime<Utc>) -> String {
     let sl = record.effective_service_level.as_deref().unwrap_or("?");
-    let deadline = record.deadline().unwrap();
     let diff_mins = (deadline - now).num_minutes();
     if diff_mins >= 0 {
         format!(
@@ -300,20 +299,22 @@ mod tests {
     #[test]
     fn render_expiry_line_not_yet_expired() {
         let r = record_with_sl("1284221", "2026-05-04T10:00:00.000+0000", "TR-ECG-20");
+        let deadline = r.deadline().unwrap();
         let now = chrono::DateTime::parse_from_rfc3339("2026-05-04T10:08:00+00:00")
             .unwrap()
             .with_timezone(&Utc);
-        let line = render_expiry_line(&r, now);
+        let line = render_expiry_line(&r, deadline, now);
         assert_eq!(line, "⏰ Prossima scadenza: TR-ECG-20 — #1284221 — scade tra 12 min");
     }
 
     #[test]
     fn render_expiry_line_already_expired() {
         let r = record_with_sl("1284221", "2026-05-04T10:00:00.000+0000", "TR-ECG-20");
+        let deadline = r.deadline().unwrap();
         let now = chrono::DateTime::parse_from_rfc3339("2026-05-04T10:25:00+00:00")
             .unwrap()
             .with_timezone(&Utc);
-        let line = render_expiry_line(&r, now);
+        let line = render_expiry_line(&r, deadline, now);
         assert_eq!(line, "🔴 Prossima scadenza: TR-ECG-20 — #1284221 — scaduta da 5 min");
     }
 

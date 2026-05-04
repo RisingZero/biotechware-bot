@@ -131,17 +131,6 @@ pub fn is_short_term(service_level: Option<&str>) -> bool {
     }
 }
 
-/// Records that are long-term holter (HC) or HP categories — handled with
-/// less urgency.
-pub fn is_long_term(service_level: Option<&str>) -> bool {
-    match service_level {
-        Some(s) => {
-            s.contains("HP") || s.contains("HC") || s.contains("NO")
-        }
-        None => false,
-    }
-}
-
 pub fn sla_duration(sl: Option<&str>) -> Option<chrono::Duration> {
     let s = sl?;
     if s.contains("ECG-20") {
