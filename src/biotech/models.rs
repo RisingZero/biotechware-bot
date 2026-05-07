@@ -64,7 +64,15 @@ pub struct Record {
 impl Record {
     pub fn deadline(&self) -> Option<chrono::DateTime<chrono::Utc>> {
         let date_str = self.reception_date.as_deref()?;
-        let parsed = chrono::DateTime::parse_from_str(date_str, "%Y-%m-%dT%H:%M:%S%.f%z").ok()?;
+        
+        // Try RFC3339 format first (handles both +00:00 and +0000 with colon)
+        let parsed = chrono::DateTime::parse_from_rfc3339(date_str)
+            .or_else(|_| {
+                // Fallback: try compact format without colon in timezone (+0000)
+                chrono::DateTime::parse_from_str(date_str, "%Y-%m-%dT%H:%M:%S%.f%z")
+            })
+            .ok()?;
+        
         let duration = sla_duration(self.effective_service_level.as_deref())?;
         Some(parsed.with_timezone(&chrono::Utc) + duration)
     }

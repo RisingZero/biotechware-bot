@@ -99,7 +99,7 @@ async fn tick(
         let removed_count = known_ids.iter().filter(|id| !current_ids.contains(*id)).count();
 
         let expiry_line = find_next_expiring(&records)
-            .map(|r| render_expiry_line(r, r.deadline().unwrap(), now));
+            .and_then(|r| should_show_expiry_line(now, r));
 
         if !new.is_empty() {
             let mut new_counts: HashMap<String, usize> = HashMap::new();
@@ -192,6 +192,17 @@ fn find_next_expiring(records: &[Record]) -> Option<&Record> {
         .iter()
         .filter(|r| r.deadline().is_some())
         .min_by_key(|r| r.deadline().unwrap())
+}
+
+fn should_show_expiry_line(now: DateTime<Utc>, record: &Record) -> Option<String> {
+    let deadline = record.deadline()?;
+    let diff_mins = (deadline - now).num_minutes();
+    // Only show expiry line if remaining time < 5 minutes
+    if diff_mins < 5 {
+        Some(render_expiry_line(record, deadline, now))
+    } else {
+        None
+    }
 }
 
 fn render_expiry_line(record: &Record, deadline: DateTime<Utc>, now: DateTime<Utc>) -> String {
@@ -352,5 +363,73 @@ mod tests {
         assert!(s.contains("TR-ECG-20: 1"));
         assert!(s.contains("Coda attuale (3):"));
         assert!(s.contains("TR-HC-24: 1"));
+    }
+
+    #[test]
+    fn expiry_line_filtering_hides_when_more_than_5_mins() {
+        // TR-ECG-20 has 20 minute SLA, reception at 10:00:00
+        // so deadline is at 10:20:00
+        // If now is 10:08:00, remaining = 12 minutes
+        let r = record_with_sl("1284221", "2026-05-04T10:00:00.000+0000", "TR-ECG-20");
+        let now = chrono::DateTime::parse_from_rfc3339("2026-05-04T10:08:00+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
+        let result = should_show_expiry_line(now, &r);
+        assert!(result.is_none(), "Expiry line should be hidden when > 5 minutes remain");
+    }
+
+    #[test]
+    fn expiry_line_filtering_shows_when_less_than_5_mins() {
+        // TR-ECG-20 has 20 minute SLA, reception at 10:00:00
+        // so deadline is at 10:20:00
+        // If now is 10:17:00, remaining = 3 minutes (< 5)
+        let r = record_with_sl("1284221", "2026-05-04T10:00:00.000+0000", "TR-ECG-20");
+        let now = chrono::DateTime::parse_from_rfc3339("2026-05-04T10:17:00+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
+        let result = should_show_expiry_line(now, &r);
+        assert!(result.is_some(), "Expiry line should be shown when < 5 minutes remain");
+        assert!(result.unwrap().contains("scade tra 3 min"));
+    }
+
+    #[test]
+    fn expiry_line_filtering_shows_at_exactly_boundary() {
+        // TR-ECG-20 has 20 minute SLA, reception at 10:00:00
+        // so deadline is at 10:20:00
+        // If now is 10:16:00, remaining = 4 minutes (< 5)
+        let r = record_with_sl("1284221", "2026-05-04T10:00:00.000+0000", "TR-ECG-20");
+        let now = chrono::DateTime::parse_from_rfc3339("2026-05-04T10:16:00+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
+        let result = should_show_expiry_line(now, &r);
+        assert!(result.is_some(), "Expiry line should be shown at 4 minutes (boundary)");
+    }
+
+    #[test]
+    fn expiry_line_filtering_hides_when_at_5_min_boundary() {
+        // TR-ECG-20 has 20 minute SLA, reception at 10:00:00
+        // so deadline is at 10:20:00
+        // If now is 10:15:00, remaining = exactly 5 minutes (should be hidden, < not <=)
+        let r = record_with_sl("1284221", "2026-05-04T10:00:00.000+0000", "TR-ECG-20");
+        let now = chrono::DateTime::parse_from_rfc3339("2026-05-04T10:15:00+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
+        let result = should_show_expiry_line(now, &r);
+        assert!(result.is_none(), "Expiry line should be hidden when exactly 5 minutes remain");
+    }
+
+    #[test]
+    fn expiry_line_filtering_shows_when_expired() {
+        // TR-ECG-20 has 20 minute SLA, reception at 10:00:00
+        // so deadline is at 10:20:00
+        // If now is 10:25:00, already expired by 5 minutes (still < 5 mins elapsed? No.)
+        // Actually, 10:25 - 10:20 = 5 minutes expired, and diff_mins = -5, which is < 5
+        let r = record_with_sl("1284221", "2026-05-04T10:00:00.000+0000", "TR-ECG-20");
+        let now = chrono::DateTime::parse_from_rfc3339("2026-05-04T10:25:00+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
+        let result = should_show_expiry_line(now, &r);
+        assert!(result.is_some(), "Expiry line should be shown when expired (negative time is < 5)");
+        assert!(result.unwrap().contains("scaduta"));
     }
 }
