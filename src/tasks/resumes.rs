@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{Datelike, Utc};
 use tokio::time::sleep;
-use tracing::{error, info, debug, instrument};
+use tracing::{error, info, debug, instrument, warn};
 
 use crate::biotech::models::{ListType, Record};
 use crate::biotech::{BiotechwareApi, FetchOptions};
@@ -77,7 +77,20 @@ async fn tick(
                 .unwrap_or(false)
         })),
     };
-    let this_month: Vec<Record> = api.fetch_all(ListType::Reported, opts).await?;
+    let fetched: Vec<Record> = api.fetch_all(ListType::Reported, opts).await?;
+
+    // The list is paginated by offset and grows at the head while pages are
+    // being fetched, so a record on a page boundary can be returned twice.
+    let n_fetched = fetched.len();
+    let mut seen: HashSet<String> = HashSet::new();
+    let this_month: Vec<Record> = fetched
+        .into_iter()
+        .filter(|r| seen.insert(r.id.clone()))
+        .collect();
+    let n_duplicates = n_fetched - this_month.len();
+    if n_duplicates > 0 {
+        warn!(n_duplicates, "dropped duplicate records from reported list");
+    }
 
     // Look up cached service-level mapping populated by the checker.
     let ids: Vec<String> = this_month.iter().map(|r| r.id.clone()).collect();
@@ -149,6 +162,7 @@ async fn tick(
         total_eur,
         total_taxed,
         n_records = this_month.len(),
+        n_duplicates,
         "resumes tick complete"
     );
     Ok(())

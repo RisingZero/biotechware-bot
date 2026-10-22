@@ -23,7 +23,7 @@ const SESSION_TTL_HOURS: i64 = 1;
 /// records on each fetch.
 const FIRST_COUNTER: i32 = -10;
 const HTTP_TIMEOUT_SECS: u64 = 30;
-const EARLY_STOP_GRACE_PAGES: usize = 5;
+const EARLY_STOP_GRACE_PAGES: usize = 10;
 
 pub struct FetchOptions {
     pub record_filter: Option<Box<dyn Fn(&Record) -> bool + Send + Sync>>,
